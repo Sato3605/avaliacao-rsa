@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chat 2</title>
+
+    <!-- Importa a biblioteca Socket.IO para comunicação em tempo real -->
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
+    <!-- Importa o arquivo de estilo CSS -->
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <h1>Chat 2</h1>
+
+    <!-- Área principal do chat -->
+    <div id="chat">
+        <!-- Onde as mensagens serão exibidas -->
+        <div id="messages"></div>
+
+        <!-- Área de entrada de mensagem -->
+        <div id="inputArea">
+            <input type="text" id="msgInput" placeholder="Digite sua mensagem">
+            <button onclick="enviar()">Enviar</button>
+        </div>
+    </div>
+
+    <script>
+        // Conecta com o backend via Socket.IO (WebSocket)
+        const socket = io();
+
+        // Variáveis para armazenar minhas chaves RSA
+        let minhaPrivada;
+        let minhaPublica;
+
+        // Chave pública do servidor (injetada pelo Flask no HTML)
+        let chaveServidor = {{ public_key | tojson }};
+
+        // Função para verificar se um número é primo
+        function ehPrimo(n) {
+            for (let i = 2; i <= Math.sqrt(n); i++) {
+                if (n % i === 0) return false;
+            }
+            return n > 1;
+        }
+
+        // Gera um número primo aleatório entre 100 e 200
+        function gerarPrimo() {
+            let n;
+            do {
+                n = Math.floor(Math.random() * 100) + 100;
+            } while (!ehPrimo(n));
+            return n;
+        }
+
+        // Máximo divisor comum
+        function mdc(a, b) {
+            while (b !== 0) {
+                [a, b] = [b, a % b];
+            }
+            return a;
+        }
+
+        // Inverso modular (usado para calcular o expoente privado 'd')
+        function modinv(a, m) {
+            let [m0, x0, x1] = [m, 0, 1];
+            while (a > 1) {
+                let q = Math.floor(a / m);
+                [a, m] = [m, a % m];
+                [x0, x1] = [x1 - q * x0, x0];
+            }
+            return x1 < 0 ? x1 + m0 : x1;
+        }
+
+        // Geração das chaves RSA do cliente (pública e privada)
+        function gerarChavesRSA() {
+            let p = gerarPrimo();
+            let q = gerarPrimo();
+            while (q === p) q = gerarPrimo(); // evita que p e q sejam iguais
+
+            let n = p * q;
+            let phi = (p - 1) * (q - 1);
+            let e = 3;
+            while (mdc(e, phi) !== 1) e += 2;
+
+            let d = modinv(e, phi);
+
+            minhaPrivada = [d, n]; // chave privada: usada para descriptografar
+            minhaPublica = [e, n]; // chave pública: usada para criptografar
+
+            console.log(" Chave pública do cliente:", minhaPublica);
+            console.log(" Chave privada do cliente:", minhaPrivada);
+
+            // Envia a chave pública para o servidor assim que o cliente entra
+            socket.emit("public_key", { key: minhaPublica });
+        }
+
+        // Criptografa a mensagem com uma chave pública
+        function cifra(msg, chave) {
+            let [e, n] = chave;
+            let nums = Array.from(msg).map(c =>
+                (BigInt(c.charCodeAt(0)) ** BigInt(e) % BigInt(n)).toString()
+            );
+            return btoa(JSON.stringify(nums)); // transforma o array cifrado em base64
+        }
+
+        // Descriptografa a mensagem usando a chave privada
+        function decifra(cifrada, chave) {
+            let [d, n] = chave;
+            try {
+                let lista = JSON.parse(atob(cifrada)).map(x => BigInt(x));
+                return lista.map(c => String.fromCharCode(Number(c ** BigInt(d) % BigInt(n)))).join('');
+            } catch {
+                return "[Erro de descriptografia]";
+            }
+        }
+
+        // Função chamada ao clicar no botão "Enviar"
+        function enviar() {
+            const input = document.getElementById("msgInput");
+            const texto = input.value.trim();
+            if (!texto) return;
+
+            console.log(" Mensagem original:", texto);
+
+            // Criptografa com a chave do servidor
+            const criptografada = cifra(texto, chaveServidor);
+            console.log(" Mensagem criptografada:", criptografada);
+
+            // Envia a mensagem criptografada para o backend
+            socket.emit("send_message", { message: criptografada });
+
+            // Mostra a mensagem no chat localmente (sem criptografia)
+            adicionarMensagem("Você", texto);
+            input.value = "";
+        }
+
+        // Adiciona visualmente uma mensagem no chat
+        function adicionarMensagem(remetente, mensagem) {
+            const messages = document.getElementById("messages");
+            const linha = document.createElement("div");
+            linha.textContent = `${remetente}: ${mensagem}`;
+            messages.appendChild(linha);
+            messages.scrollTop = messages.scrollHeight;
+        }
+
+        // Evento que escuta mensagens recebidas do servidor
+        socket.on("receive_message", data => {
+            console.log(" Mensagem recebida (criptografada):", data.message);
+
+            // Descriptografa a mensagem com a chave privada do cliente
+            const mensagem = decifra(data.message, minhaPrivada);
+            console.log(" Mensagem descriptografada:", mensagem); 
+
+            adicionarMensagem("Outro", mensagem);
+        });
+
+        // Permite pressionar "Enter" para enviar a mensagem
+        document.getElementById("msgInput").addEventListener("keydown", e => {
+            if (e.key === "Enter") {
+                enviar();
+            }
+        });
+
+        // Gera automaticamente as chaves ao carregar a página
+        gerarChavesRSA();
+    </script>
+</body>
+</html>
